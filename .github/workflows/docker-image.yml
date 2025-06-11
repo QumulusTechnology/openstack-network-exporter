@@ -1,0 +1,77 @@
+name: Docker Image CI
+
+on:
+  push:
+  pull_request_target:
+    branches:
+      - "main"
+
+permissions:
+  contents: read
+  id-token: write
+  pull-requests: write
+
+concurrency:
+  group: '${{ github.workflow }} @ ${{ github.repository }} @ ${{ github.base_ref || github.ref_name }}'
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on:
+      group: 'prod'
+
+    steps:
+
+    - uses: QumulusTechnology/vault-setup-action@v2
+      with:
+        aws_account_data: ${{ secrets.AWS_ACCOUNT_DATA }}
+        vault_addr: ${{ secrets.VAULT_ADDR }}
+        platform: qcp
+        secrets: |
+          secret/data/qcp/global/harbor/prod/github-user username | REPO_USERNAME ;
+          secret/data/qcp/global/harbor/prod/github-user password | REPO_PASSWORD ;
+          secret/data/qcp/global/harbor/prod/github-user address | REPO_ADDRESS
+
+
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ env.BRANCH }}
+
+    - name: Set environment variables
+      run: |
+        echo "GITHUB_ACTIONS_BRANCH=${{ github.base_ref || github.ref_name }}" >> $GITHUB_ENV
+        echo "GITHUB_ACTIONS_WORKFLOW_ID=${{ github.run_id }}" >> $GITHUB_ENV
+        echo "GITHUB_ACTIONS_WORKFLOW_ATEMPT=${{ github.run_attempt }}" >> $GITHUB_ENV
+        echo "GITHUB_ACTIONS_WORKFLOW_RUN_NUMBER=${{ github.run_number }}" >> $GITHUB_ENV
+        echo "GITHUB_ACTIONS_AUTHOR=${{ github.actor }}" >> $GITHUB_ENV
+
+    - name: Login to repository
+      uses: docker/login-action@v2
+      with:
+        registry: ${{ env.REPO_ADDRESS }}
+        username: ${{ env.REPO_USERNAME }}
+        password: ${{ env.REPO_PASSWORD}}
+
+    - name: set tags
+      run: |
+        if [ "$BRANCH" == "main" ]; then
+          echo "DOCKER_TAG=latest" >> $GITHUB_ENV
+          echo "VERSION=1.0.0" >> $GITHUB_ENV
+        else
+          echo "DOCKER_TAG=dev" >> $GITHUB_ENV
+          echo "DOCKER_POSTFIX=_dev" >> $GITHUB_ENV
+          echo "VERSION=dev" >> $GITHUB_ENV
+        fi
+        echo "IMAGE_NAME=openstack-network-exporter" >> $GITHUB_ENV
+
+
+    - name: Build the Docker image
+      run: |
+        DATESTAMP=$(date +%s)
+        docker build . --file Dockerfile --build-arg VERSION=${VERSION} --tag ${REPO_ADDRESS}/qcp/${IMAGE_NAME}:${DATESTAMP}
+        docker tag ${REPO_ADDRESS}/qcp/${IMAGE_NAME}:${DATESTAMP} ${REPO_ADDRESS}/qcp/${IMAGE_NAME}:v${VERSION}${DOCKER_POSTFIX}
+
+    - name: Push the Docker image
+      run: |
+        docker push ${REPO_ADDRESS}/qcp/${IMAGE_NAME} --all-tags
